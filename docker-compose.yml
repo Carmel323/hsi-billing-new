@@ -1,0 +1,106 @@
+x-php-variables: &php-variables
+  APP_NAME: hsi-isp-billing
+  APP_ENV: local
+  APP_DEBUG: true
+  APP_KEY: base64:CVPQNopGS52nSUC/QUw14dLuUupNF81RYnPhteNa47M=
+  APP_TIMEZONE: UTC
+  APP_URL: http://partner-program.local
+  CACHE_STORE: redis
+  DB_CONNECTION: mysql
+  DB_HOST: mysql
+  DB_SLAVE_HOST: mysql
+  DB_NAME: isp_billing
+  DB_DATABASE: isp_billing
+  DB_USERNAME: root
+  DB_PASSWORD: NULL
+  DB_PORT: 3306
+  LOG_THRESHOLD: 1
+  LOG_CHANNEL: stderr
+  NEWRELIC_ENABLED: 0
+  PHP_OPCACHE_VALIDATE_TIMESTAMPS: 1
+  REDIS_CLIENT: phpredis
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  SESSION_DRIVER: redis
+  AWS_PROFILE: martech_dev
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_BUCKET: "hsi-isp-billing-staging-file-storage"
+  SANDSTONE_BASE_URL: "https://sandstone-backend-stage.herokuapp.com"
+  SANDSTONE_USER_ID: "local-isp"
+
+services:
+  app:
+    image: hsi-billing:fpm
+    env_file:
+      - ops/staging/basic.env
+      - ops/staging/secrets.env
+    environment: *php-variables
+    build:
+      context: .
+      target: base
+      dockerfile: ops/docker/Dockerfile
+    volumes:
+      - ./:/app
+      - ${HOME}/.aws:/home/www-data/.aws:ro
+      - ${HOME}/.aws/sso:/home/www-data/.aws/sso
+    ports:
+      - "9000"
+    depends_on:
+      - mysql
+      - redis
+
+  nginx:
+    image: hsi-billing:nginx
+    build:
+      context: .
+      target: nginx
+      dockerfile: ops/docker/Dockerfile
+    ports:
+      - "80:80"
+    volumes:
+      - ./public:/app/public
+      - ./node_modules:/app/node_modules
+    environment:
+      VIRTUAL_HOST: partner-program.local
+      HSTS: "off"
+      HTTPS_METHOD: noredirect
+      APP_DOMAIN: partner-program.local
+      PHP_FPM_HOST: app
+    depends_on:
+      - app
+
+  mysql:
+    image: mysql:8.0
+    restart: always
+    environment:
+      - MYSQL_ALLOW_EMPTY_PASSWORD=true
+    volumes:
+      - hsi-billingdata:/var/lib/mysql
+      - ./mysql/config:/etc/mysql/conf.d:ro
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - ${DB_HOST_PORT-3306}:3306
+
+  redis:
+    image: redis:6-alpine
+    restart: always
+    ports:
+      - "6379"
+
+  vite:
+    image: hsi-billing:vite
+    build:
+      context: .
+      dockerfile: ops/docker/Dockerfile
+      target: node
+    command: npm run watch
+    #entrypoint: /bin/sh
+    ports:
+      - 8000:8000
+    volumes:
+      - ./:/app
+    tty: true
+
+
+volumes:
+  hsi-billingdata:

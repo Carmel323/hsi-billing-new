@@ -1,0 +1,104 @@
+# required environment variables, in appropriate BB
+# deployment configurations:
+#
+# ENVIRONMENT_NAME
+# AWS_REGION
+# CODEPIPELINE_BUCKET
+# AWS_ACCESS_KEY_ID
+# AWS_SECRET_ACCESS_KEY
+# REGISTRY_URL
+
+image: public.ecr.aws/cldevops/pipeline-tools:21
+options:
+  docker: true
+
+
+definitions:
+  steps:
+    - step: &test
+        name: Build and test
+        services:
+          - docker
+        caches:
+          - docker
+        script:
+          - . ops/scripts/vars.sh
+          - make fpm
+          - make nginx
+    - step: &deploy
+        name: Build and deploy
+        services:
+          - docker
+        caches:
+          - docker
+        script:
+          - . ops/scripts/vars.sh
+          #- cp ops/scripts/artifacts.sh /usr/local/bin/pipeline-scripts/artifacts.sh && chmod +x /usr/local/bin/pipeline-scripts/artifacts.sh
+          - eval $(aws ecr get-login --no-include-email --region $AWS_REGION)
+          - REGISTRY=$REGISTRY_URL make push
+          - make trigger-deploy
+    - step: &deploy-config
+        name: Deploy Config
+        services:
+          - docker
+        caches:
+          - docker
+        script:
+          - . ops/scripts/vars.sh
+          - make deploy-config
+    - step: &restart-services
+        name: Restart services
+        services:
+          - docker
+        caches:
+          - docker
+        script:
+          - . ops/scripts/vars.sh
+          - make restart-services
+
+pipelines:
+  default:
+    - step: *test
+  branches:
+    master:
+      - stage:
+          deployment: production
+          steps:
+            - step: *deploy-config
+            - step: *deploy
+
+    staging:
+      - stage:
+          deployment: staging
+          steps:
+            - step: *deploy-config
+            - step: *deploy
+
+  custom:
+    deploy_to_staging:
+      - stage:
+          deployment: staging
+          steps:
+            - step: *deploy-config
+            - step: *deploy
+
+    deploy_to_prod:
+      - stage:
+          deployment: production
+          steps:
+            - step: *deploy-config
+            - step: *deploy
+
+    deploy_prod_config:
+      - stage:
+          deployment: production
+          steps:
+            - step: *deploy-config
+            - step: *restart-services
+
+    deploy_staging_config:
+      - stage:
+          deployment: staging
+          steps:
+            - step: *deploy-config
+            - step: *restart-services
