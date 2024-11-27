@@ -1,0 +1,558 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Infrastructure for app stack
+
+Parameters:
+  AppName:
+    Type: String
+
+  EnvironmentName:
+    Type: String
+    Default: production
+
+  InfrastructureStackName:
+    Type: String
+    Description: Name of the Cloudformation stack defining the cluster
+
+  PipelineStackName:
+    Type: String
+    Description: Name of the Cloudformation stack defining the Codepipeline
+
+  AppDomains:
+    Description: App domain name (e.g. aim.clearlink.com)
+    Type: String
+
+  WebServiceMaxCount:
+    Description: Maximum instances of the web service running
+    Type: String
+    Default: 10
+
+  WebServiceMinCount:
+    Description: Desired instances of the web service running
+    Type: String
+    Default: 1
+
+  # QueueServiceMaxCount:
+  #   Description: Maximum instances of the queue service running
+  #   Type: String
+  #   Default: 10
+
+  # QueueServiceMinCount:
+  #   Description: Desired instances of the queue service running
+  #   Type: String
+  #   Default: 2
+
+  LoadbalancerStackName:
+    Type: String
+    Description: Name of the Cloudformation stack defining the load balancer
+
+  ImageTag:
+    Default: latest
+    Type: String
+
+  HealthCheckCodes:
+    Default: 200-299
+    Type: String
+
+  ListenerRulePriority:
+    Type: String
+    Description: Random number between 10000 and 50000 so it does not collide with other listener rules
+
+  ALBAppCertARN:
+    Type: String
+    Default: ''
+    Description: If this app has an SSL cert that isn't already attached to the LB, this will attach it if provided
+
+  DeploymentConfigMaxPercent:
+    Description: The maximum percent of tasks that can be running during the deployment process
+    Type: String
+    Default: '200'
+
+  DeploymentConfigMinPercent:
+    Description: The minimum percent of tasks that can be running during the deployment process
+    Type: String
+    Default: '100'
+
+
+Conditions:
+  HasALBAppCert: !Not [ !Equals [ !Ref ALBAppCertARN, "" ] ]
+
+Resources:
+
+  AppCloudWatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref AWS::StackName
+      RetentionInDays: 90
+
+  # QueueService:
+  #   Type: AWS::ECS::Service
+  #   Properties:
+  #     Cluster:
+  #       Fn::ImportValue: !Sub "${InfrastructureStackName}-ClusterName"
+  #     TaskDefinition: !Ref QueueTaskDefinition
+  #     PlacementStrategies:
+  #       - Field: attribute:ecs.availability-zone
+  #         Type: spread
+  #       - Field: instanceId
+  #         Type: spread
+
+  # QueueTaskDefinition:
+  #   Type: AWS::ECS::TaskDefinition
+  #   Properties:
+  #     Family: !Sub ${AppName}-${EnvironmentName}-queue
+  #     TaskRoleArn:
+  #       Fn::ImportValue: !Sub "${PipelineStackName}-PreDeployTaskRole"
+  #     ContainerDefinitions:
+  #       - Name: queue-workers
+  #         Essential: true
+  #         Command:
+  #           - /start-queue.sh
+  #         Image: !Sub
+  #           - "${RepoUrl}:fpm-${ImageTag}"
+  #           - RepoUrl:
+  #               Fn::ImportValue: !Sub "${PipelineStackName}-RepositoryUrl"
+  #         MemoryReservation: 768
+  #         Cpu: 512
+  #         Environment:
+  #           - Name: APP_NAME
+  #             Value: !Ref AppName
+  #           - Name: ENVIRONMENT_NAME
+  #             Value: !Ref EnvironmentName
+  #           - Name: CHAMBER_ENV
+  #             Value: "1"
+  #           - Name: CHAMBER_PREFIXES
+  #             Value: !Sub app/${AppName}/${EnvironmentName}/run
+  #           - Name: CHAMBER_KMS_KEY_ALIAS
+  #             Value:
+  #               Fn::ImportValue: !Sub '${PipelineStackName}-SsmKeyAlias'
+  #           - Name: AWS_REGION
+  #             Value: !Ref AWS::Region
+  #           - Name: BASIC_ENV_FILE
+  #             Value: !Sub /var/ops/${EnvironmentName}/basic.env
+  #         LogConfiguration:
+  #           LogDriver: awslogs
+  #           Options:
+  #             awslogs-group: !Ref AppCloudWatchLogsGroup
+  #             awslogs-region: !Ref AWS::Region
+  #             awslogs-stream-prefix: queue
+
+  # SchedulerService:
+  #   Type: AWS::ECS::Service
+  #   Properties:
+  #     Cluster:
+  #       Fn::ImportValue: !Sub "${InfrastructureStackName}-ClusterName"
+  #     TaskDefinition: !Ref SchedulerTaskDefinition
+  #     PlacementStrategies:
+  #       - Field: attribute:ecs.availability-zone
+  #         Type: spread
+  #       - Field: instanceId
+  #         Type: spread
+
+  # SchedulerTaskDefinition:
+  #   Type: AWS::ECS::TaskDefinition
+  #   Properties:
+  #     Family: !Sub ${AppName}-${EnvironmentName}-scheduler
+  #     TaskRoleArn:
+  #       Fn::ImportValue: !Sub "${PipelineStackName}-PreDeployTaskRole"
+  #     ContainerDefinitions:
+  #       - Name: scheduler
+  #         Essential: true
+  #         Command:
+  #           - /start-scheduler.sh
+  #         Image: !Sub
+  #           - "${RepoUrl}:fpm-${ImageTag}"
+  #           - RepoUrl:
+  #               Fn::ImportValue: !Sub "${PipelineStackName}-RepositoryUrl"
+  #         MemoryReservation: 512
+  #         Cpu: 512
+  #         Environment:
+  #           - Name: APP_NAME
+  #             Value: !Ref AppName
+  #           - Name: ENVIRONMENT_NAME
+  #             Value: !Ref EnvironmentName
+  #           - Name: CHAMBER_ENV
+  #             Value: "1"
+  #           - Name: IS_PRE_DEPLOY
+  #             Value: "1"
+  #           - Name: CHAMBER_PREFIXES
+  #             Value: !Sub app/${AppName}/${EnvironmentName}/run
+  #           - Name: CHAMBER_KMS_KEY_ALIAS
+  #             Value:
+  #               Fn::ImportValue: !Sub '${PipelineStackName}-SsmKeyAlias'
+  #           - Name: AWS_REGION
+  #             Value: !Ref AWS::Region
+  #           - Name: BASIC_ENV_FILE
+  #             Value: !Sub /var/ops/${EnvironmentName}/basic.env
+  #         LogConfiguration:
+  #           LogDriver: awslogs
+  #           Options:
+  #             awslogs-group: !Ref AppCloudWatchLogsGroup
+  #             awslogs-region: !Ref AWS::Region
+  #             awslogs-stream-prefix: scheduler
+
+  WebService:
+    Type: AWS::ECS::Service
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3002
+    Properties:
+      Cluster:
+        Fn::ImportValue: !Sub "${InfrastructureStackName}-ClusterName"
+      Role: !GetAtt ServiceRole.Arn
+      TaskDefinition: !Ref WebTaskDefinition
+      HealthCheckGracePeriodSeconds: 30
+      DeploymentConfiguration:
+        MaximumPercent: !Ref DeploymentConfigMaxPercent
+        MinimumHealthyPercent: !Ref DeploymentConfigMinPercent
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      LoadBalancers:
+        - ContainerName: "nginx"
+          ContainerPort: 80
+          TargetGroupArn: !Ref TargetGroup
+      PlacementStrategies:
+        - Field: attribute:ecs.availability-zone
+          Type: spread
+        - Field: instanceId
+          Type: spread
+
+  WebTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AppName}-${EnvironmentName}-web
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ExecutionRoleArn:
+        Fn::ImportValue: !Sub "${PipelineStackName}-ExecutionRoleArn"
+      ContainerDefinitions:
+        - Name: nginx
+          Essential: true
+          Image: !Sub
+            - "${RepoUrl}:nginx-${ImageTag}"
+            - RepoUrl:
+                Fn::ImportValue: !Sub "${PipelineStackName}-RepositoryUrl"
+          Links:
+            - fpm
+          MemoryReservation: 64
+          Environment:
+            - Name: APP_NAME
+              Value: !Ref AppName
+            - Name: ENVIRONMENT_NAME
+              Value: !Ref EnvironmentName
+            - Name: APP_DOMAIN
+              Value: !Sub "${AppDomains}"
+            - Name: PHP_FPM_HOST
+              Value: fpm
+          PortMappings:
+            - ContainerPort: 80
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref AppCloudWatchLogsGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: nginx
+        - Name: fpm
+          Essential: true
+          Image: !Sub
+            - "${RepoUrl}:fpm-${ImageTag}"
+            - RepoUrl:
+                Fn::ImportValue: !Sub "${PipelineStackName}-RepositoryUrl"
+          MemoryReservation: 512
+          Cpu: 1024
+          Environment:
+            - Name: APP_NAME
+              Value: !Ref AppName
+            - Name: ENVIRONMENT_NAME
+              Value: !Ref EnvironmentName
+            - Name: CHAMBER_ENV
+              Value: "1"
+            - Name: CHAMBER_PREFIXES
+              Value: !Sub app/${AppName}/${EnvironmentName}/run
+            - Name: CHAMBER_KMS_KEY_ALIAS
+              Value:
+                Fn::ImportValue: !Sub '${PipelineStackName}-SsmKeyAlias'
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: NEWRELIC_ENABLED
+              Value: "1"
+            - Name: AWS_BUCKET
+              Value: !Ref fileStorageBucket
+          EnvironmentFiles:
+            - Type: s3
+              Value: !Sub
+                - ${SourceBucketArn}/EnvFiles/${EnvironmentName}/basic.env
+                - SourceBucketArn:
+                    Fn::ImportValue: !Sub "${PipelineStackName}-SourceBucketArn"
+                  EnvironmentName: !Ref EnvironmentName
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref AppCloudWatchLogsGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: fpm
+
+
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ecs-task-${AWS::StackName}
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ecs-task-${AWS::StackName}
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Resource:
+                  - !Sub "arn:aws:ssm:*:*:parameter/app/${AppName}/${EnvironmentName}/run/*"
+                Action:
+                  - ssm:GetParametersByPath
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+              - Effect: Allow
+                Action:
+                  - ssm:DescribeParameters
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt fileStorageBucket.Arn
+                  - !Sub 
+                    - "${fileStorageBucketArn}/*"
+                    - fileStorageBucketArn:
+                        Fn::GetAtt: [fileStorageBucket, Arn]
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub
+                    - "${SourceBucketArn}/EnvFiles/${EnvironmentName}/*.env"
+                    - SourceBucketArn:
+                        Fn::ImportValue: !Sub "${PipelineStackName}-SourceBucketArn"
+
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource:
+                  Fn::ImportValue: !Sub '${PipelineStackName}-SsmKeyArn'
+
+  ##### S3 Bucket for file storage #####
+  fileStorageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AppName}-${EnvironmentName}-file-storage"
+      AccessControl: Private
+      VersioningConfiguration:
+        Status: Suspended
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: true
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+
+  ##### Load Balancing #####
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId:
+        Fn::ImportValue: !Sub "${InfrastructureStackName}-VpcId"
+      Port: 80
+      Protocol: HTTP
+      Matcher:
+        HttpCode: !Ref HealthCheckCodes
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "5"
+
+  AlbListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      Conditions:
+        - Field: host-header
+          HostHeaderConfig:
+            Values: !Split [" ", !Ref AppDomains]
+      ListenerArn:
+        Fn::ImportValue: !Sub '${LoadbalancerStackName}-SslListener'
+      Priority: !Ref ListenerRulePriority
+
+
+  AppSSLCert:
+    Type: AWS::ElasticLoadBalancingV2::ListenerCertificate
+    Condition: HasALBAppCert
+    Properties:
+      Certificates:
+        - CertificateArn: !Ref ALBAppCertARN
+      ListenerArn:
+        Fn::ImportValue: !Sub '${LoadbalancerStackName}-SslListener'
+
+  # This IAM Role grants the service access to register/unregister with the
+  # Application Load Balancer (ALB). It is based on the default documented here:
+  # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/service_IAM_role.html
+  ServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ecs-service-${AWS::StackName}
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ecs-service-${AWS::StackName}
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Resource: !Ref TargetGroup
+                Action:
+                  - elasticloadbalancing:RegisterTargets
+                  - elasticloadbalancing:DeregisterTargets
+              - Effect: Allow
+                Resource: '*'
+                Action:
+                  - ec2:Describe*
+                  - elasticloadbalancing:Describe*
+
+  ##### Scaling #####
+
+  ## Web Service ##
+  ServiceScalableTarget:
+    Type: "AWS::ApplicationAutoScaling::ScalableTarget"
+    Properties:
+      MaxCapacity: !Ref WebServiceMaxCount
+      MinCapacity: !Ref WebServiceMinCount
+      ResourceId: !Sub
+        - "service/${ClusterName}/${WebService.Name}"
+        - ClusterName:
+            Fn::ImportValue: !Sub "${InfrastructureStackName}-ClusterName"
+      RoleARN: !GetAtt ECSAutoScalingRole.Arn
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  ServiceScaleOutPolicy:
+    Type: "AWS::ApplicationAutoScaling::ScalingPolicy"
+    Properties:
+      PolicyName: !Sub ${AWS::StackName}-ScaleOut
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ServiceScalableTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 900
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalLowerBound: 0
+            ScalingAdjustment: 1
+
+  ServiceScaleInPolicy:
+    Type: "AWS::ApplicationAutoScaling::ScalingPolicy"
+    Properties:
+      PolicyName: !Sub ${AWS::StackName}-ScaleIn
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref ServiceScalableTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 900
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalUpperBound: 0
+            ScalingAdjustment: -1
+
+  CPUScaleOutAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-WebService CPU utilization greater than 90%
+      AlarmDescription: Alarm if cpu utilization greater than 90% of reserved cpu on the Web Service
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value:
+            Fn::ImportValue: !Sub "${InfrastructureStackName}-ClusterName"
+        - Name: ServiceName
+          Value: !GetAtt WebService.Name
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 90
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref ServiceScaleOutPolicy
+
+  CPUScaleInAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-WebService CPU utilization less than 70%
+      AlarmDescription: Alarm if cpu utilization greater than 70% of reserved cpu on the Web Service
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value:
+            Fn::ImportValue: !Sub "${InfrastructureStackName}-ClusterName"
+        - Name: ServiceName
+          Value: !GetAtt WebService.Name
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 10
+      Threshold: 50
+      ComparisonOperator: LessThanThreshold
+      AlarmActions:
+        - !Ref ServiceScaleInPolicy
+
+  ECSAutoScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ecs-scaling-${AWS::StackName}
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: application-autoscaling.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ecs-scaling-${AWS::StackName}
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Resource: !Ref WebService
+                Action:
+                  - ecs:DescribeServices
+                  - ecs:UpdateService
+              - Effect: Allow
+                Resource: '*'
+                Action:
+                  - cloudwatch:DescribeAlarms
+
+Outputs:
+  AppName:
+    Value: !Ref AppName
+    Export:
+      Name: !Sub "${AWS::StackName}-AppName"
+
+  EnvironmentName:
+    Value: !Ref EnvironmentName
+    Export:
+      Name: !Sub "${AWS::StackName}-EnvironmentName"

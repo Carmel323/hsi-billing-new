@@ -1,0 +1,16 @@
+export APP_DOMAIN=partner-program.stage.clear.link
+export ENVIRONMENT_NAME=staging
+export AWS_PROFILE=martech_dev
+export AWS_REGION=us-east-1
+export CLUSTER_NAME=not-prod
+export LOADBALANCER_STACK_NAME=not-prod-load-balancer
+export INFRASTRUCTURE_STACK_NAME=not-prod-ecs-cluster
+export ALB_APP_CERT_ARN=arn:aws:acm:us-east-1:485174081234:certificate/6bc97b4c-beb2-4345-9da7-72d7e435a193
+export ALB_LISTENER_RULE_PRIORITY='323'
+export TEAM_NAME=Sudarsan
+export DRT_EMAIL=systemadmins@clearlink.com
+export COMPLIANCE=sox
+export WEB_SERVICE_MIN_COUNT='1'
+export WEB_SERVICE_MAX_COUNT='8'
+export REGISTRY=485174081234.dkr.ecr.us-east-1.amazonaws.com/hsi-isp-billing-staging
+export CODEPIPELINE_BUCKET=hsi-isp-billing-staging-pipeline-sourcebucket-jclct8sagskp

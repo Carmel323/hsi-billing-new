@@ -1,0 +1,599 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Deployment pipeline for AIM
+
+Parameters:
+  InfrastructureStackName:
+    Type: String
+    Description: Name of the Cloudformation stack defining the cluster
+
+  EnvironmentName:
+    Type: String
+
+  AppName:
+    Type: String
+
+  AppStackName:
+    Type: String
+    Description: Name of the main stack to deploy
+
+  CreateManualApproval:
+    Type: String
+    Description: Whether to create a manual approval step ("true" or "false")
+    Default: "false"
+
+
+Conditions:
+  ManualApproval: !Equals [!Ref CreateManualApproval, "true"]
+
+Resources:
+
+  SsmKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub ${AppName} ${EnvironmentName} key for parameter store encryption
+      KeyPolicy:
+        Version: 2012-10-17
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+
+  SsmKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/${AppName}-${EnvironmentName}-app-ps-key
+      TargetKeyId: !GetAtt SsmKey.Arn
+
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - '*'
+                Effect: Allow
+                Resource: '*'
+
+  CodebuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Resource:
+                  - !Sub "arn:aws:ssm:*:*:parameter/app/${AppName}/${EnvironmentName}/pre-deploy/*"
+                  - !Sub "arn:aws:ssm:*:*:parameter/app/${AppName}/${EnvironmentName}/run/*"
+                Action:
+                  - ssm:GetParametersByPath
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+              - Effect: Allow
+                Action:
+                  - ssm:DescribeParameters
+                  - iam:PassRole
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !GetAtt SsmKey.Arn
+              - Effect: Allow
+                Resource:
+                  - !Sub "${ArtifactBucket.Arn}/*"
+                Action:
+                  - s3:GetObject
+              - Effect: Allow
+                Resource:
+                  - !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/${AppName}-${EnvironmentName}-pre-deploy*"
+                  - !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/${AppName}-${EnvironmentName}-post-deploy*"
+                Action:
+                  - ecs:RunTask
+              - Effect: Allow
+                Resource: !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task/*"
+                Action:
+                  - ecs:DescribeTasks
+              - Effect: Allow
+                Resource: !GetAtt CloudWatchLogsGroup.Arn
+                Action:
+                  - logs:CreateLogStream
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+
+  PipelineSNSTopic:
+    Type: 'AWS::SNS::Topic'
+    Condition: ManualApproval
+    Properties:
+      TopicName: !Sub ${AWS::StackName}-pipeline
+
+  PipelineTrigger:
+    Type: "Clearlink::CodePipeline::Trigger::MODULE"
+    Properties:
+      Pipeline: !Ref Pipeline
+      SourceBucket: !Ref SourceBucket
+      SourceKey: !Sub ${AppName}/${EnvironmentName}/app.zip
+      TargetName: !Sub ${AppName}-trigger
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: App
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: S3
+                Version: '1'
+              Configuration:
+                S3Bucket: !Ref SourceBucket
+                S3ObjectKey: !Sub ${AppName}/${EnvironmentName}/app.zip
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: App
+              RunOrder: 1
+
+        - Name: UpdateStack
+          Actions:
+            - Name: CreateChangeset
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              InputArtifacts:
+                - Name: App
+              Configuration:
+                ActionMode: CHANGE_SET_REPLACE
+                RoleArn: !GetAtt PipelineRole.Arn
+                StackName: !Ref AppStackName
+                ChangeSetName: !Sub ${AppStackName}-updated
+                TemplateConfiguration: "App::ops/app.json"
+                TemplatePath: 'App::ops/cloudformation/app.yml'
+                Capabilities: CAPABILITY_NAMED_IAM
+              RunOrder: 1
+            - !If
+              - ManualApproval
+              - Name: ApproveChangeSet
+                ActionTypeId:
+                  Category: Approval
+                  Owner: AWS
+                  Provider: Manual
+                  Version: '1'
+                Configuration:
+                  NotificationArn: !Ref PipelineSNSTopic
+                  CustomData: !Sub >-
+                    A new change set was created for the ${AppStackName}
+                    stack. Please review the changes before approving the change set.
+                RunOrder: 2
+              - !Ref AWS::NoValue
+            - Name: PreDeployCodebuild
+              InputArtifacts:
+                - Name: App
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref PreDeployCodebuild
+              RunOrder: 3
+            - Name: ExecuteChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                ChangeSetName: !Sub ${AppStackName}-updated
+                RoleArn: !GetAtt PipelineRole.Arn
+                StackName: !Ref AppStackName
+              RunOrder: 4
+            - Name: PostDeployCodeBuild
+              InputArtifacts:
+                - Name: App
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref PostDeployCodeBuild
+              RunOrder: 5
+
+
+  PostDeployCodeBuild:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - run-ecs-task ${CLUSTER_NAME} ${APP_NAME}-${ENVIRONMENT_NAME}-post-deploy -w postdeploy
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: 'public.ecr.aws/cldevops/pipeline-tools:21'
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: AWS_REGION
+            Value: !Ref AWS::Region
+          - Name: APP_NAME
+            Value: !Ref AppName
+          - Name: ENVIRONMENT_NAME
+            Value: !Ref EnvironmentName
+          - Name: CHAMBER_KMS_KEY_ALIAS
+            Value: !Sub "alias/${AppName}-${EnvironmentName}-app-ps-key"
+          - Name: CLUSTER_NAME
+            Value:
+              Fn::ImportValue: !Sub '${InfrastructureStackName}-ClusterName'
+      Name: !Sub ${AppName}-${EnvironmentName}-post-deploy
+      ServiceRole: !GetAtt CodebuildRole.Arn
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref CloudWatchLogsGroup
+          StreamName: codebuild-postdeploy
+
+  # Runs one-off tasks, updates parameter store
+  PreDeployCodebuild:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - run-ecs-task ${CLUSTER_NAME} ${APP_NAME}-${ENVIRONMENT_NAME}-pre-deploy -w predeploy -t 240
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: 'public.ecr.aws/cldevops/pipeline-tools:21'
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: AWS_REGION
+            Value: !Ref AWS::Region
+          - Name: APP_NAME
+            Value: !Ref AppName
+          - Name: ENVIRONMENT_NAME
+            Value: !Ref EnvironmentName
+          - Name: CHAMBER_KMS_KEY_ALIAS
+            Value: !Sub "alias/${AppName}-${EnvironmentName}-app-ps-key"
+          - Name: CLUSTER_NAME
+            Value:
+              Fn::ImportValue: !Sub '${InfrastructureStackName}-ClusterName'
+      Name: !Sub ${AppName}-${EnvironmentName}-pre-deploy
+      ServiceRole: !GetAtt CodebuildRole.Arn
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref CloudWatchLogsGroup
+          StreamName: codebuild-predeploy
+
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+
+  BitbucketPipelineUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "${AWS::StackName}-bb-user"
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Resource: !Sub "${SourceBucket.Arn}/*"
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+              - Effect: Allow
+                Action:
+                  - ecs:ListServices
+                Resource: !Sub
+                  - "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/${ClusterName}/*"
+                  - ClusterName:
+                      Fn::ImportValue: !Sub '${InfrastructureStackName}-ClusterName'
+              - Effect: Allow
+                Action: ecs:UpdateService
+                Resource: !Sub
+                  - "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/${ClusterName}/${AppName}-${EnvironmentName}*"
+                  - ClusterName:
+                      Fn::ImportValue: !Sub '${InfrastructureStackName}-ClusterName'
+              - Effect: Allow
+                Resource: '*'
+                Action:
+                  - ecr:GetAuthorizationToken
+              - Resource: !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${Repository}"
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:CompleteLayerUpload
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+
+  Repository:
+    Type: AWS::ECR::Repository
+    Properties:
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      RepositoryName: !Sub "${AppName}-${EnvironmentName}"
+
+  PreDeployTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AppName}-${EnvironmentName}-pre-deploy
+      TaskRoleArn: !Ref PreDeployTaskRole
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: predeploy
+          Image: !Sub
+            - "${RepoUrl}:fpm-pre-deploy"
+            - RepoUrl: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${Repository}"
+          MemoryReservation: 1024
+          Command:
+            - /usr/local/bin/pre-deploy.sh
+          Environment:
+            - Name: APP_NAME
+              Value: !Ref AppName
+            - Name: ENVIRONMENT_NAME
+              Value: !Ref EnvironmentName
+            - Name: CHAMBER_ENV
+              Value: "1"
+            - Name: CHAMBER_KMS_KEY_ALIAS
+              Value: !Ref SsmKeyAlias
+            - Name: RUN_TYPE
+              Value: "pre-deploy"
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: IS_PRE_DEPLOY
+              Value: "1"
+          EnvironmentFiles:
+            - Type: s3
+              Value: !Sub
+                - ${SourceBucketArn}/EnvFiles/${EnvironmentName}/predeploybasic.env
+                - SourceBucketArn: !GetAtt SourceBucket.Arn
+                  EnvironmentName: !Ref EnvironmentName
+            - Type: s3
+              Value: !Sub
+                - ${SourceBucketArn}/EnvFiles/${EnvironmentName}/basic.env
+                - SourceBucketArn: !GetAtt SourceBucket.Arn
+                  EnvironmentName: !Ref EnvironmentName
+
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref CloudWatchLogsGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: pre-deploy
+
+  PostDeployTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AppName}-${EnvironmentName}-post-deploy
+      TaskRoleArn: !Ref PreDeployTaskRole
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: postdeploy
+          Image: !Sub
+            - "${RepoUrl}:fpm-pre-deploy"
+            - RepoUrl: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${Repository}"
+          MemoryReservation: 1024
+          Command:
+            - /usr/local/bin/post-deploy.sh
+          Environment:
+            - Name: APP_NAME
+              Value: !Ref AppName
+            - Name: ENVIRONMENT_NAME
+              Value: !Ref EnvironmentName
+            - Name: CHAMBER_ENV
+              Value: "1"
+            - Name: CHAMBER_KMS_KEY_ALIAS
+              Value: !Ref SsmKeyAlias
+            - Name: RUN_TYPE
+              Value: "pre-deploy"
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: IS_PRE_DEPLOY
+              Value: "1"
+          EnvironmentFiles:
+            - Type: s3
+              Value: !Sub
+                - ${SourceBucketArn}/EnvFiles/${EnvironmentName}/predeploybasic.env
+                - SourceBucketArn: !GetAtt SourceBucket.Arn
+                  EnvironmentName: !Ref EnvironmentName
+            - Type: s3
+              Value: !Sub
+                - ${SourceBucketArn}/EnvFiles/${EnvironmentName}/basic.env
+                - SourceBucketArn: !GetAtt SourceBucket.Arn
+                  EnvironmentName: !Ref EnvironmentName
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref CloudWatchLogsGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: post-deploy
+
+  CloudWatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref AWS::StackName
+      RetentionInDays: 90
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ecs-execution-role-${AWS::StackName}
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub
+                  - "${SourceBucketArn}/EnvFiles/${EnvironmentName}/*"
+                  - SourceBucketArn: !GetAtt SourceBucket.Arn
+                    EnvironmentName: !Ref EnvironmentName
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                Resource: !GetAtt SourceBucket.Arn
+
+  PreDeployTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ecs-pre-deploy-task-${AWS::StackName}
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ecs-pre-deploy-task-${AWS::StackName}
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Resource:
+                  - !Sub "arn:aws:ssm:*:*:parameter/app/${AppName}/${EnvironmentName}/pre-deploy/*"
+                  - !Sub "arn:aws:ssm:*:*:parameter/app/${AppName}/${EnvironmentName}/run/*"
+                Action:
+                  - ssm:GetParametersByPath
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+              - Effect: Allow
+                Action:
+                  - ssm:DescribeParameters
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !GetAtt SsmKey.Arn
+
+
+Outputs:
+
+  ExecutionRoleArn:
+    Value: !GetAtt ExecutionRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ExecutionRoleArn"
+
+  ArtifactBucketArn:
+    Value: !GetAtt ArtifactBucket.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ArtifactBucketArn"
+
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-ArtifactBucketName"
+
+  SourceBucketArn:
+    Value: !GetAtt SourceBucket.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-SourceBucketArn"
+
+  SourceBucketName:
+    Value: !Ref SourceBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-SourceBucketName"
+
+  PipelineUrl:
+    Value: !Sub https://console.aws.amazon.com/codepipeline/home?region=${AWS::Region}#/view/${Pipeline}
+    Export:
+      Name: !Sub "${AWS::StackName}-PipelineUrl"
+
+  RepositoryUrl:
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${Repository}"
+    Export:
+      Name: !Sub "${AWS::StackName}-RepositoryUrl"
+
+  RepositoryName:
+    Value: !Ref Repository
+    Export:
+      Name: !Sub "${AWS::StackName}-RepositoryName"
+
+  SsmKeyArn:
+    Value: !GetAtt SsmKey.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-SsmKeyArn"
+
+  PreDeployTaskRole:
+    Value: !GetAtt PreDeployTaskRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-PreDeployTaskRole"
+
+  SsmKeyAlias:
+    Value: !Ref SsmKeyAlias
+    Export:
+      Name: !Sub "${AWS::StackName}-SsmKeyAlias"
+

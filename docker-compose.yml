@@ -1,0 +1,84 @@
+x-php-variables: &php-variables
+  APP_NAME: hsi-billing
+  APP_ENV: local
+  APP_DEBUG: true
+  APP_KEY: base64:CVPQNopGS52nSUC/QUw14dLuUupNF81RYnPhteNa47M=
+  APP_TIMEZONE: UTC
+  APP_URL: http://hsi-billing.local
+  CACHE_STORE: redis
+  DB_CONNECTION: mysql
+  DB_HOST: hsi-billing-mysql
+  DB_NAME: hsi-billing
+  DB_USER: root
+  DB_PORT: 3306
+  DB_DATABASE: isp_billing
+  LOG_THRESHOLD: 1
+  LOG_CHANNEL: stderr
+  NEWRELIC_ENABLED: 0
+  PHP_OPCACHE_VALIDATE_TIMESTAMPS: 1
+  REDIS_CLIENT: phpredis
+  REDIS_HOST: hsi-billing-redis
+  REDIS_PASSWORD: null
+  REDIS_PORT: 6379
+  SESSION_DRIVER: redis
+
+services:
+  hsi-billing-app:
+    image: hsi-billing:fpm
+    container_name: hsi-billing-app
+    environment: *php-variables
+    build:
+      context: .
+      target: base
+      dockerfile: ops/docker/Dockerfile
+    volumes:
+      - ./:/app
+    ports:
+      - "9000"
+    depends_on:
+      - hsi-billing-mysql
+      - hsi-billing-redis
+
+  hsi-billing:
+    image: hsi-billing:nginx
+    container_name: hsi-billing
+    build:
+      context: .
+      target: nginx
+      dockerfile: ops/docker/Dockerfile
+    ports:
+      - "80:80"
+    volumes:
+      - ./system:/var/www/html
+    environment:
+      VIRTUAL_HOST: lms.move.local
+      HSTS: "off"
+      HTTPS_METHOD: noredirect
+      APP_DOMAIN: isp.billing.local
+      PHP_FPM_HOST: hsi-billing-app
+    depends_on:
+      - hsi-billing-app
+
+  hsi-billing-mysql:
+    image: mysql:8.0
+    container_name: hsi-billing-mysql
+    restart: always
+    environment:
+      - MYSQL_ALLOW_EMPTY_PASSWORD=true
+    volumes:
+      - hsi-billingdata:/var/lib/mysql
+      - ./mysql/config:/etc/mysql/conf.d:ro
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - ${DB_HOST_PORT-3306}:3306
+
+  hsi-billing-redis:
+    image: redis:6-alpine
+    container_name: hsi-billing-redis
+    restart: always
+    ports:
+      - "6379"
+
+
+volumes:
+  hsi-billingdata:

@@ -1,0 +1,66 @@
+app:
+  StackName: ${APP_NAME}-${ENVIRONMENT_NAME}
+  DisableRollback: true
+  Parameters:
+    AppName: ${APP_NAME}
+    EnvironmentName: ${ENVIRONMENT_NAME}
+    InfrastructureStackName: ${INFRASTRUCTURE_STACK_NAME}
+    LoadbalancerStackName: ${LOADBALANCER_STACK_NAME}
+    PipelineStackName: ${APP_NAME}-${ENVIRONMENT_NAME}-pipeline
+    AppDomains: ${APP_DOMAIN}
+    WebServiceMinCount: "${WEB_SERVICE_MIN_COUNT}"
+    WebServiceMaxCount: "${WEB_SERVICE_MAX_COUNT}"
+    HealthCheckCodes: 200-499
+    ListenerRulePriority: "${ALB_LISTENER_RULE_PRIORITY}"
+    ImageTag: ${CL_BUILD_VERSION}
+    ALBAppCertARN:  ${ALB_APP_CERT_ARN}
+    DeploymentConfigMaxPercent: '200'
+    DeploymentConfigMinPercent: '100'
+  Tags:
+    Name: ${APP_NAME}
+    environment: ${ENVIRONMENT_NAME}
+    application: ${APP_NAME}
+    team: ${TEAM_NAME}
+    compliance: ${COMPLIANCE}
+    platform: cloudformation
+    drt: ${DRT_EMAIL}
+    ttl: "-1"
+  StackPolicy:
+    Statement:
+      - Effect: Allow
+        Action: Update:*
+        Principal: "*"
+        Resource: "*"
+
+pipeline:
+  StackName: ${APP_NAME}-${ENVIRONMENT_NAME}-pipeline
+  DisableRollback: false
+  Parameters:
+    AppName: ${APP_NAME}
+    InfrastructureStackName: ${INFRASTRUCTURE_STACK_NAME}
+    EnvironmentName: ${ENVIRONMENT_NAME}
+    AppStackName: ${APP_NAME}-${ENVIRONMENT_NAME}
+    CreateManualApproval: 'false'
+  Tags:
+    Name: ${APP_NAME}-${ENVIRONMENT_NAME}-pipeline
+    environment: ${ENVIRONMENT_NAME}
+    application: ${APP_NAME}
+    team: ${TEAM_NAME}
+    compliance: ${COMPLIANCE}
+    platform: codepipeline
+    drt: ${DRT_EMAIL}
+    ttl: "-1"
+  StackPolicy:
+    Statement:
+      - Effect: Allow
+        Action: Update:*
+        Principal: "*"
+        Resource: "*"
+      - Effect: Deny
+        Action: Update:Delete
+        Principal: "*"
+        Resource: "*"
+        Condition:
+          StringEquals:
+            ResourceType:
+              - AWS::IAM::User
